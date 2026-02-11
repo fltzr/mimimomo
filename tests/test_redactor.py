@@ -679,19 +679,19 @@ class TestPlatformTokenDetection:
 
     def test_slack_bot_token(self):
         r = Redactor()
-        token = "xoxb-123456789012-1234567890123-abcdefghijklmnopqrstuvwx"
+        token = "xoxb-0000000000000-0000000000000-fakefakefakefakefakefake"
         text, _ = r.redact(f"SLACK_TOKEN={token}")
         assert token not in text
 
     def test_slack_webhook(self):
         r = Redactor()
-        url = "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"
+        url = "https://hooks.slack.com/services/TFAKETEST/BFAKETEST/FAKEFAKEFAKEFAKEFAKETEST"
         text, _ = r.redact(f"webhook: {url}")
         assert url not in text
 
     def test_stripe_key(self):
         r = Redactor()
-        key = "sk_live_abcdefghijklmnopqrstuvwx"
+        key = "sk_live_FAKEFAKEFAKEFAKEFAKEFAKE"
         text, _ = r.redact(f"STRIPE_KEY={key}")
         assert key not in text
 
