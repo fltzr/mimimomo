@@ -131,3 +131,29 @@ class TestProfileLoading:
     def test_no_profiles_returns_empty(self):
         profile = _get_profile_from_yaml({}, None)
         assert profile == {}
+
+
+class TestSecurityConfig:
+    """Test security-related config fields."""
+
+    def test_enforce_allowlist_default_false(self):
+        c = Config()
+        assert c.enforce_allowlist is False
+        assert c.allowed_hosts == []
+
+    def test_allowed_hosts_from_env(self):
+        config = {"allowed_hosts": [], "enforce_allowlist": False}
+        with mock.patch.dict(os.environ, {
+            "CLIAI_ALLOWED_HOSTS": "api.openai.com, localhost, *.groq.com",
+            "CLIAI_ENFORCE_ALLOWLIST": "true",
+        }):
+            result = _apply_env_vars(config)
+        assert result["allowed_hosts"] == ["api.openai.com", "localhost", "*.groq.com"]
+        assert result["enforce_allowlist"] is True
+
+    def test_allowed_hosts_empty_env(self):
+        config = {"allowed_hosts": ["original.com"]}
+        with mock.patch.dict(os.environ, {"CLIAI_ALLOWED_HOSTS": ""}):
+            result = _apply_env_vars(config)
+        assert result["allowed_hosts"] == []
+
