@@ -1,1 +1,6 @@
-click>=8,<9
+typer
+rich
+httpx
+prompt_toolkit
+pyyaml
+platformdirs
