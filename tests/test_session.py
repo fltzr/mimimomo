@@ -1,4 +1,4 @@
-"""Tests for session.py — chat session management and persistence."""
+"""Tests for session.py — chat session and per-exchange logging."""
 
 import json
 import sys
@@ -6,22 +6,19 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# Use a temp directory for sessions during tests
-_test_sessions_dir = Path(tempfile.mkdtemp()) / "sessions"
-_test_sessions_dir.mkdir(parents=True, exist_ok=True)
+# Use a temp directory for exchanges during tests
+_test_data_dir = Path(tempfile.mkdtemp()) / "data"
+_test_exchanges_dir = _test_data_dir / "exchanges"
+_test_exchanges_dir.mkdir(parents=True, exist_ok=True)
 
+import config
+config.DATA_DIR = _test_data_dir
 
-with mock.patch("config.SESSIONS_DIR", _test_sessions_dir):
-    # Need to also patch in the session module
-    import config
-    original_sessions_dir = config.SESSIONS_DIR
-    config.SESSIONS_DIR = _test_sessions_dir
-
-    from session import ChatSession, _sanitize_filename
+from session import ChatSession, save_exchange  # noqa: E402
+import session as session_module
+session_module.EXCHANGES_DIR = _test_exchanges_dir
 
 
 class TestSessionMessages:
@@ -124,66 +121,37 @@ class TestContextTrimming:
         assert s.message_count == 1
 
 
-class TestPersistence:
-    """Test session save/load."""
+class TestSaveExchange:
+    """Test per-exchange file saving."""
 
-    def test_save_and_load(self):
-        s = ChatSession(system_prompt="Be concise.")
-        s.add_user("Hello")
-        s.add_assistant("Hi!")
-
-        path = s.save("test_roundtrip")
-        assert path.exists()
-
-        loaded = ChatSession.load("test_roundtrip")
-        assert loaded.message_count == 2
-        assert loaded.system_prompt == "Be concise."
-        assert loaded.session_name == "test_roundtrip"
-
-    def test_save_auto_name(self):
-        s = ChatSession()
-        s.add_user("test")
-        path = s.save()
+    def test_save_exchange_creates_file(self):
+        with mock.patch.object(session_module, "EXCHANGES_DIR", _test_exchanges_dir):
+            path = save_exchange(
+                prompt="What is Python?",
+                response="Python is a programming language.",
+                model="gpt-4",
+                endpoint="https://api.openai.com/v1",
+            )
         assert path.exists()
         assert path.suffix == ".json"
 
-    def test_load_nonexistent(self):
-        with pytest.raises(FileNotFoundError):
-            ChatSession.load("does_not_exist_xyz")
+        data = json.loads(path.read_text())
+        assert data["prompt"] == "What is Python?"
+        assert data["response"] == "Python is a programming language."
+        assert data["model"] == "gpt-4"
+        assert data["endpoint"] == "https://api.openai.com/v1"
+        assert "timestamp" in data
 
-    def test_list_sessions(self):
-        # Create a session to ensure something is listed
-        s = ChatSession()
-        s.add_user("list test")
-        s.save("list_test_session")
+    def test_save_exchange_unique_filenames(self):
+        import time
+        paths = []
+        with mock.patch.object(session_module, "EXCHANGES_DIR", _test_exchanges_dir):
+            for i in range(3):
+                p = save_exchange(f"prompt {i}", f"response {i}", "model", "http://x")
+                paths.append(p)
+                time.sleep(0.001)  # Ensure unique microsecond timestamps
 
-        sessions = ChatSession.list_sessions()
-        assert len(sessions) > 0
-        names = [s["name"] for s in sessions]
-        assert "list_test_session" in names
-
-    def test_delete_session(self):
-        s = ChatSession()
-        s.add_user("delete me")
-        s.save("delete_test")
-
-        assert ChatSession.delete_session("delete_test") is True
-        assert ChatSession.delete_session("delete_test") is False
+        # All paths should be unique
+        assert len(set(paths)) == 3
 
 
-class TestSanitizeFilename:
-    """Test filename sanitization."""
-
-    def test_normal_name(self):
-        assert _sanitize_filename("my_session") == "my_session"
-
-    def test_spaces_replaced(self):
-        assert _sanitize_filename("my session") == "my_session"
-
-    def test_special_chars(self):
-        result = _sanitize_filename("test/file:name")
-        assert "/" not in result
-        assert ":" not in result
-
-    def test_empty_string(self):
-        assert _sanitize_filename("") == "unnamed"

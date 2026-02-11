@@ -5,9 +5,6 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
-import pytest
-import yaml
-
 # Patch config paths before importing
 _test_dir = tempfile.mkdtemp()
 _test_config_dir = Path(_test_dir) / "config"

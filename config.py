@@ -38,6 +38,7 @@ class Config:
     system_prompt: str = ""
     stream: bool = True
     profile_name: str = "default"
+    redact_terms: dict = field(default_factory=dict)
 
     def display_endpoint(self) -> str:
         """Return a display-safe version of the endpoint."""
@@ -55,6 +56,7 @@ class Config:
         """Serialize to dict (for display/debug)."""
         d = asdict(self)
         d["api_key"] = self.display_key()
+        d.pop("redact_terms", None)  # Don't display in info
         return d
 
 
@@ -90,6 +92,15 @@ profiles:
   #   model: "llama-3.3-70b-versatile"
   #   temperature: 0.7
   #   stream: true
+
+# Redaction: define sensitive terms to always mask.
+# These are applied BEFORE regex patterns.
+redact:
+  terms: {}
+  # Example:
+  #   "acme-corp": "[COMPANY]"
+  #   "Project Falcon": "[PROJECT]"
+  #   "prod-west-2": "[CLUSTER_1]"
 """
 
 
@@ -203,6 +214,10 @@ def load_config(
         or os.environ.get("CLIAI_PROFILE")
         or yaml_data.get("default_profile", "default")
     )
+
+    # Extract redact terms from global YAML config (not per-profile)
+    redact_config = yaml_data.get("redact", {})
+    config_dict["redact_terms"] = redact_config.get("terms", {}) or {}
 
     # Build config, filtering out unknown keys
     valid_keys = {f.name for f in Config.__dataclass_fields__.values()}

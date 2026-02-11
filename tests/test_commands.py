@@ -4,8 +4,6 @@ import sys
 from pathlib import Path
 from unittest import mock
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from commands import parse_command, CommandHandler, COMMAND_HELP
@@ -19,8 +17,8 @@ class TestParseCommand:
         assert result == ("/help", "")
 
     def test_parse_command_with_args(self):
-        result = parse_command("/save my_session")
-        assert result == ("/save", "my_session")
+        result = parse_command("/model gpt-4o")
+        assert result == ("/model", "gpt-4o")
 
     def test_parse_command_with_multi_word_args(self):
         result = parse_command("/system You are a helpful assistant.")
@@ -116,30 +114,18 @@ class TestCommandHandler:
         assert handled is False
         ui.show_error.assert_called_once()
 
-    def test_save_command(self):
-        handler, session, ui, _ = self._make_handler()
-        session.save.return_value = Path("/tmp/test.json")
-        handler.handle("/save", "my_session")
-        session.save.assert_called_once_with("my_session")
-
-    def test_load_missing_name(self):
-        handler, _, ui, _ = self._make_handler()
-        handler.handle("/load", "")
-        ui.show_error.assert_called_once()
-
-    def test_delete_missing_name(self):
-        handler, _, ui, _ = self._make_handler()
-        handler.handle("/delete", "")
-        ui.show_error.assert_called_once()
-
 
 class TestCommandHelp:
     """Test that all commands have help text."""
 
     def test_all_commands_documented(self):
-        expected = ["/help", "/clear", "/save", "/load", "/sessions",
-                    "/delete", "/model", "/system", "/retry", "/info", "/exit"]
+        expected = ["/help", "/clear", "/model", "/system", "/retry", "/info", "/exit"]
         for cmd in expected:
-            # Check that at least the base command is in help keys
             matching = [k for k in COMMAND_HELP if k.startswith(cmd)]
             assert len(matching) > 0, f"Missing help for {cmd}"
+
+    def test_removed_commands_not_present(self):
+        """Session persistence commands should not exist."""
+        for cmd in ["/save", "/load", "/sessions", "/delete"]:
+            matching = [k for k in COMMAND_HELP if k.startswith(cmd)]
+            assert len(matching) == 0, f"{cmd} should have been removed"

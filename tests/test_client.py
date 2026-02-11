@@ -5,8 +5,6 @@ import sys
 from pathlib import Path
 from unittest import mock
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from client import ChatClient, ChatChunk, _extract_error_message, _calculate_backoff

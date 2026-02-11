@@ -249,29 +249,6 @@ class ChatUI:
         """Display goodbye message."""
         console.print("\n[bold bright_cyan]👋 Goodbye![/bold bright_cyan]\n")
 
-    def show_sessions_list(self, sessions: list[dict]):
-        """Display a table of saved sessions."""
-        if not sessions:
-            console.print("[dim]No saved sessions.[/dim]")
-            return
-
-        table = Table(title="Saved Sessions", border_style="bright_cyan")
-        table.add_column("Name", style="bold")
-        table.add_column("Messages", justify="right")
-        table.add_column("Created", style="dim")
-        table.add_column("File", style="dim")
-
-        for s in sessions:
-            created = s.get("created_at", "")[:19].replace("T", " ")
-            table.add_row(
-                s["name"],
-                str(s["message_count"]),
-                created,
-                s["file"],
-            )
-
-        console.print(table)
-
     def show_help(self, commands: dict[str, str]):
         """Display the help table."""
         table = Table(
@@ -284,5 +261,176 @@ class ChatUI:
 
         for cmd, desc in commands.items():
             table.add_row(cmd, desc)
+
+        console.print(table)
+
+    # ── Redaction Review ────────────────────────────────────────
+
+    def redaction_review(
+        self, original_text: str, redacted_text: str, redactions: list
+    ) -> tuple[str, str, list, bool]:
+        """
+        Interactive redaction confirmation gate.
+
+        Shows the redacted version of the user's input and allows them to
+        send, add manual redactions, unredact items, or cancel.
+
+        Args:
+            original_text: The original user input.
+            redacted_text: The text after auto-redaction.
+            redactions: List of Redaction objects applied.
+
+        Returns:
+            (final_original, final_redacted, final_redactions, should_send)
+        """
+        from redactor import Redactor
+
+        current_redacted = redacted_text
+        current_redactions = list(redactions)
+
+        while True:
+            # Build the review panel
+            self._show_redaction_panel(current_redacted, current_redactions)
+
+            # Prompt for action
+            try:
+                action = self._session.prompt(
+                    HTML(
+                        '<style fg="ansiyellow" bold="true">'
+                        'send / [a]dd / [u]nredact # / [c]ancel › '
+                        '</style>'
+                    )
+                ).strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                return original_text, current_redacted, current_redactions, False
+
+            if action == "send":
+                return original_text, current_redacted, current_redactions, True
+
+            elif action == "c" or action == "cancel":
+                return original_text, current_redacted, current_redactions, False
+
+            elif action == "a" or action.startswith("add"):
+                # Prompt for text to redact
+                try:
+                    text_to_mask = self._session.prompt(
+                        HTML('<style fg="ansiyellow">Text to redact › </style>')
+                    ).strip()
+                except (KeyboardInterrupt, EOFError):
+                    continue
+
+                if not text_to_mask:
+                    self.show_warning("No text provided.")
+                    continue
+
+                if text_to_mask not in original_text and text_to_mask not in current_redacted:
+                    self.show_warning(f"'{text_to_mask}' not found in input.")
+                    continue
+
+                # Use the redactor to add a manual redaction
+                # We need a reference to the Redactor, so we accept it as a standalone
+                # We'll handle this by creating a new Redaction inline
+                from redactor import Redaction
+                tag_num = len(current_redactions) + 1
+                placeholder = f"[REDACTED_{tag_num}]"
+                redaction = Redaction(text_to_mask, placeholder, "manual", auto=False)
+                current_redacted = current_redacted.replace(text_to_mask, placeholder)
+                current_redactions.append(redaction)
+                self.show_success(f"Redacted: {text_to_mask} → {placeholder}")
+
+            elif action.startswith("u"):
+                # Parse the number: "u 1", "u1", "unredact 2"
+                parts = action.split()
+                num_str = ""
+                if len(parts) == 1:
+                    # "u1" or "u"
+                    num_str = parts[0].lstrip("unredact").strip()
+                elif len(parts) >= 2:
+                    num_str = parts[-1]
+
+                if not num_str.isdigit():
+                    self.show_error("Usage: u <number>  (e.g., u 1)")
+                    continue
+
+                idx = int(num_str) - 1
+                if idx < 0 or idx >= len(current_redactions):
+                    self.show_error(
+                        f"Invalid number. Choose 1-{len(current_redactions)}."
+                    )
+                    continue
+
+                r = current_redactions[idx]
+                current_redacted = current_redacted.replace(r.placeholder, r.original)
+                current_redactions.pop(idx)
+                self.show_success(f"Unredacted: {r.placeholder} → {r.original}")
+
+            else:
+                self.show_error("Unknown action. Use [s]end, [a]dd, [u]nredact #, or [c]ancel.")
+
+    def _show_redaction_panel(self, redacted_text: str, redactions: list):
+        """Display the redaction review panel."""
+        from rich.columns import Columns
+
+        # Build content
+        content_parts = []
+        content_parts.append(
+            Text(redacted_text, style="white")
+        )
+
+        if redactions:
+            content_parts.append(Text(""))  # spacing
+
+            table = Table(
+                show_header=True, box=None, padding=(0, 2),
+                header_style="dim bold",
+            )
+            table.add_column("#", style="dim", width=3)
+            table.add_column("Original", style="red strike")
+            table.add_column("→", style="dim", width=1)
+            table.add_column("Masked As", style="bold bright_green")
+            table.add_column("Type", style="dim")
+
+            for i, r in enumerate(redactions, 1):
+                auto_tag = "" if r.auto else "manual"
+                table.add_row(
+                    str(i),
+                    r.original,
+                    "→",
+                    r.placeholder,
+                    r.category if r.auto else auto_tag,
+                )
+
+            content_parts.append(table)
+        else:
+            content_parts.append(Text(""))
+            content_parts.append(
+                Text("  No sensitive data detected.", style="dim italic")
+            )
+
+        from rich.console import Group
+        panel = Panel(
+            Group(*content_parts),
+            title="[bold yellow]🔒 Redaction Review[/bold yellow]",
+            border_style="yellow",
+            padding=(1, 2),
+        )
+        console.print()
+        console.print(panel)
+
+    def show_redaction_mapping(self, mapping: list[tuple[str, str, str]]):
+        """Display the current session redaction mapping."""
+        if not mapping:
+            console.print("[dim]No redactions in this session yet.[/dim]")
+            return
+
+        table = Table(
+            title="Active Redaction Mapping",
+            border_style="yellow",
+        )
+        table.add_column("Original", style="red")
+        table.add_column("Placeholder", style="bold bright_green")
+
+        for original, placeholder, _ in mapping:
+            table.add_row(original, placeholder)
 
         console.print(table)

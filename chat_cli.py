@@ -3,7 +3,7 @@
 CLIAI — A robust CLI AI chat platform.
 
 Works seamlessly with any OpenAI-compatible endpoint and API key.
-Supports streaming, session persistence, slash commands, and named profiles.
+Supports streaming, per-exchange logging, slash commands, and named profiles.
 """
 
 import sys
@@ -19,9 +19,10 @@ if _project_root not in sys.path:
 
 from config import Config, load_config, create_default_config, list_profiles, CONFIG_FILE
 from client import ChatClient
-from session import ChatSession
+from session import ChatSession, save_exchange
 from ui import ChatUI
 from commands import CommandHandler, parse_command
+from redactor import Redactor
 
 app = typer.Typer(
     name="cliai",
@@ -68,10 +69,6 @@ def chat(
         False, "--no-stream",
         help="Disable streaming (wait for full response)",
     ),
-    load_session: Optional[str] = typer.Option(
-        None, "--load", "-l",
-        help="Load a saved session by name",
-    ),
 ):
     """Start an interactive chat session."""
 
@@ -102,25 +99,8 @@ def chat(
     client = ChatClient(config)
     session = ChatSession(system_prompt=config.system_prompt)
     ui = ChatUI(config)
-    cmd_handler = CommandHandler(session, ui, config, client)
-
-    # Optionally load a previous session
-    if load_session:
-        try:
-            loaded = ChatSession.load(load_session)
-            session._messages = loaded._messages
-            session._system_prompt = loaded._system_prompt
-            session._session_name = loaded._session_name
-            ui.show_success(
-                f"Loaded session '{loaded.session_name}' "
-                f"({loaded.message_count} messages)"
-            )
-        except FileNotFoundError:
-            ui.show_error(f"Session not found: {load_session}")
-            raise typer.Exit(1)
-        except Exception as e:
-            ui.show_error(f"Failed to load session: {e}")
-            raise typer.Exit(1)
+    redactor = Redactor(user_terms=config.redact_terms)
+    cmd_handler = CommandHandler(session, ui, config, client, redactor)
 
     # Show welcome
     ui.show_welcome()
@@ -160,8 +140,30 @@ def chat(
                 else:
                     continue
 
-            # Add user message to session
-            session.add_user(user_input)
+            # ── Redaction Gate ───────────────────────────────
+            redacted_text, redactions = redactor.redact(user_input)
+
+            # Interactive review (always shown)
+            _, final_redacted, final_redactions, should_send = (
+                ui.redaction_review(user_input, redacted_text, redactions)
+            )
+
+            if not should_send:
+                continue
+
+            # Register any manual redactions with the redactor
+            for r in final_redactions:
+                if not r.auto and r.original not in redactor._mapping:
+                    redactor._mapping[r.original] = r.placeholder
+                    redactor._reverse[r.placeholder] = r.original
+
+            # Inject redaction-aware system hint so the LLM preserves tokens
+            if final_redactions:
+                redaction_hint = redactor.get_system_hint()
+                session.add_system_hint(redaction_hint)
+
+            # Add redacted message to session (API sees masked text)
+            session.add_user(final_redacted)
 
             # Send to API
             if config.stream:
@@ -171,27 +173,34 @@ def chat(
                 result = client.send_chat(session.get_messages())
                 if result.error:
                     ui.show_error(result.error)
-                    # Remove the user message since we failed
                     session._messages.pop()
                     continue
                 response_text = result.delta_content
                 ui.show_non_stream_response(response_text, result.usage)
 
-            # Add assistant response to history
+            # De-mask the response so the user sees real values
             if response_text:
+                unredacted_response = redactor.unredact(response_text)
+                # API-facing history stays masked
                 session.add_assistant(response_text)
+
+                # Clear the redaction hint (one-shot per turn)
+                session.clear_system_hint()
+
+                # Save original (unredacted) exchange for user logs
+                try:
+                    save_exchange(
+                        prompt=user_input,
+                        response=unredacted_response,
+                        model=config.model,
+                        endpoint=config.display_endpoint(),
+                    )
+                except Exception:
+                    pass  # Don't interrupt chat for logging failures
 
     except KeyboardInterrupt:
         pass
     finally:
-        # Auto-save if there's content
-        if not session.is_empty:
-            try:
-                path = session.save()
-                ui.show_info_msg(f"Session auto-saved: {path}")
-            except Exception:
-                pass
-
         ui.show_goodbye()
 
 
@@ -226,19 +235,6 @@ def show_config(
     profiles = list_profiles()
     if profiles:
         typer.echo(f"Available profiles: {', '.join(profiles.keys())}")
-
-
-# ── Sessions Command ───────────────────────────────────────────
-
-
-@app.command("sessions")
-def show_sessions():
-    """List saved chat sessions."""
-    from ui import ChatUI
-    config = Config()
-    ui = ChatUI(config)
-    sessions = ChatSession.list_sessions()
-    ui.show_sessions_list(sessions)
 
 
 # ── Entry Point ────────────────────────────────────────────────

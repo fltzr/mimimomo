@@ -11,13 +11,10 @@ from typing import Optional
 COMMAND_HELP = {
     "/help": "Show this help message",
     "/clear": "Clear conversation history",
-    "/save [name]": "Save session to file",
-    "/load <name>": "Load session from file",
-    "/sessions": "List saved sessions",
-    "/delete <name>": "Delete a saved session",
     "/model [name]": "Show or switch the current model",
     "/system [prompt]": "Show or set the system prompt",
     "/retry": "Re-send the last user message",
+    "/redact": "Show current redaction mapping",
     "/info": "Show current configuration",
     "/exit": "Quit the chat",
 }
@@ -49,11 +46,12 @@ class CommandHandler:
     to execute commands that affect chat state.
     """
 
-    def __init__(self, session, ui, config, client):
+    def __init__(self, session, ui, config, client, redactor=None):
         self.session = session
         self.ui = ui
         self.config = config
         self.client = client
+        self.redactor = redactor
         self._should_exit = False
         self._retry_message: Optional[str] = None
 
@@ -78,13 +76,10 @@ class CommandHandler:
         dispatch = {
             "/help": self._cmd_help,
             "/clear": self._cmd_clear,
-            "/save": self._cmd_save,
-            "/load": self._cmd_load,
-            "/sessions": self._cmd_sessions,
-            "/delete": self._cmd_delete,
             "/model": self._cmd_model,
             "/system": self._cmd_system,
             "/retry": self._cmd_retry,
+            "/redact": self._cmd_redact,
             "/info": self._cmd_info,
             "/exit": self._cmd_exit,
             "/quit": self._cmd_exit,
@@ -106,54 +101,6 @@ class CommandHandler:
     def _cmd_clear(self, args: str):
         self.session.clear()
         self.ui.show_success("Conversation cleared.")
-
-    def _cmd_save(self, args: str):
-        name = args.strip() or None
-        try:
-            filepath = self.session.save(name)
-            self.ui.show_success(f"Session saved: {filepath}")
-        except Exception as e:
-            self.ui.show_error(f"Failed to save session: {e}")
-
-    def _cmd_load(self, args: str):
-        name = args.strip()
-        if not name:
-            self.ui.show_error("Usage: /load <session_name>")
-            return
-
-        try:
-            from session import ChatSession
-            loaded = ChatSession.load(name)
-            # Transfer state to current session
-            self.session._messages = loaded._messages
-            self.session._system_prompt = loaded._system_prompt
-            self.session._session_name = loaded._session_name
-            self.session._created_at = loaded._created_at
-            self.ui.show_success(
-                f"Loaded session '{loaded.session_name}' "
-                f"({loaded.message_count} messages)"
-            )
-        except FileNotFoundError:
-            self.ui.show_error(f"Session not found: {name}")
-        except Exception as e:
-            self.ui.show_error(f"Failed to load session: {e}")
-
-    def _cmd_sessions(self, args: str):
-        from session import ChatSession
-        sessions = ChatSession.list_sessions()
-        self.ui.show_sessions_list(sessions)
-
-    def _cmd_delete(self, args: str):
-        name = args.strip()
-        if not name:
-            self.ui.show_error("Usage: /delete <session_name>")
-            return
-
-        from session import ChatSession
-        if ChatSession.delete_session(name):
-            self.ui.show_success(f"Deleted session: {name}")
-        else:
-            self.ui.show_error(f"Session not found: {name}")
 
     def _cmd_model(self, args: str):
         name = args.strip()
@@ -190,3 +137,10 @@ class CommandHandler:
 
     def _cmd_exit(self, args: str):
         self._should_exit = True
+
+    def _cmd_redact(self, args: str):
+        if self.redactor:
+            mapping = self.redactor.get_mapping_table()
+            self.ui.show_redaction_mapping(mapping)
+        else:
+            self.ui.show_info_msg("Redactor not available.")
