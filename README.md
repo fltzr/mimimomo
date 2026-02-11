@@ -1,10 +1,3 @@
-# ⚡ CLIAI
-
-A robust CLI AI chat platform that works seamlessly with **any OpenAI-compatible endpoint** and API key.
-
-Plug in OpenAI, Groq, Together, Ollama, vLLM, LM Studio, or any custom endpoint — just set your URL and key.
-
-## Features
 
 - **Provider-agnostic** — any OpenAI-compatible `/v1/chat/completions` endpoint
 - **Named profiles** — switch between endpoints/models with `--profile`
