@@ -12,12 +12,7 @@ from typing import Optional
 
 import typer
 
-# Ensure project root is on sys.path for imports
-_project_root = str(Path(__file__).resolve().parent)
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
-
-from config import Config, load_config, create_default_config, list_profiles, CONFIG_FILE
+from config import load_config, create_default_config, list_profiles, CONFIG_FILE
 from client import ChatClient
 from session import ChatSession, save_exchange
 from ui import ChatUI
@@ -178,15 +173,17 @@ def chat(
             # Send to API
             if config.stream:
                 chunks = client.stream_chat(session.get_messages())
-                response_text, usage = ui.stream_response(chunks)
+                response_text, usage = ui.stream_response(
+                    chunks, unredact=redactor.unredact
+                )
             else:
-                result = client.send_chat(session.get_messages())
-                if result.error:
-                    ui.show_error(result.error)
+                response_text, usage, error = ui.send_non_stream(
+                    send_fn=lambda: client.send_chat(session.get_messages()),
+                    unredact=redactor.unredact,
+                )
+                if error:
                     session._messages.pop()
                     continue
-                response_text = result.delta_content
-                ui.show_non_stream_response(response_text, result.usage)
 
             # De-mask the response so the user sees real values
             if response_text:

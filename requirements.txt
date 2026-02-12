@@ -1,6 +1,6 @@
 typer
 rich
-httpx
+openai
 prompt_toolkit
 pyyaml
 platformdirs

@@ -1,162 +1,105 @@
-"""Tests for client.py — API client SSE parsing and error handling."""
+"""Tests for client.py — OpenAI SDK-based chat client."""
 
-import json
 import sys
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import pytest
 
-from client import ChatClient, ChatChunk, _extract_error_message, _calculate_backoff
+from client import ChatClient, ChatChunk, _format_api_error
 from config import Config
 
 
-class TestSSEParsing:
-    """Test Server-Sent Events line parsing."""
+class TestBuildKwargs:
+    """Test request keyword argument construction."""
 
     def setup_method(self):
-        self.client = ChatClient(Config(endpoint="http://test:8080/v1"))
+        self.client = ChatClient(Config(
+            endpoint="http://test:8080/v1",
+            model="gpt-4",
+            temperature=0.5,
+        ))
 
-    def test_parse_content_chunk(self):
-        data = {
-            "choices": [{"delta": {"content": "Hello"}, "finish_reason": None}]
-        }
-        line = f"data: {json.dumps(data)}"
-        chunk = self.client._parse_sse_line(line)
-        assert chunk is not None
-        assert chunk.delta_content == "Hello"
-        assert chunk.finish_reason is None
-
-    def test_parse_done_signal(self):
-        chunk = self.client._parse_sse_line("data: [DONE]")
-        assert chunk is not None
-        assert chunk.finish_reason == "stop"
-
-    def test_parse_finish_reason(self):
-        data = {
-            "choices": [{"delta": {"content": ""}, "finish_reason": "stop"}]
-        }
-        line = f"data: {json.dumps(data)}"
-        chunk = self.client._parse_sse_line(line)
-        assert chunk is not None
-        assert chunk.finish_reason == "stop"
-
-    def test_parse_error_response(self):
-        data = {"error": {"message": "Model not found"}}
-        line = f"data: {json.dumps(data)}"
-        chunk = self.client._parse_sse_line(line)
-        assert chunk is not None
-        assert chunk.error == "Model not found"
-
-    def test_parse_usage_chunk(self):
-        data = {"usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}}
-        line = f"data: {json.dumps(data)}"
-        chunk = self.client._parse_sse_line(line)
-        assert chunk is not None
-        assert chunk.usage["total_tokens"] == 30
-
-    def test_parse_empty_line(self):
-        assert self.client._parse_sse_line("") is None
-
-    def test_parse_comment_line(self):
-        assert self.client._parse_sse_line(": keep-alive") is None
-
-    def test_parse_invalid_json(self):
-        assert self.client._parse_sse_line("data: {invalid}") is None
-
-    def test_parse_non_data_line(self):
-        assert self.client._parse_sse_line("event: message") is None
-
-
-class TestPayloadBuilding:
-    """Test request payload construction."""
-
-    def test_default_payload(self):
-        client = ChatClient(Config(model="gpt-4", temperature=0.5))
+    def test_default_kwargs(self):
         messages = [{"role": "user", "content": "Hi"}]
-        payload = client._build_payload(messages)
-        assert payload["model"] == "gpt-4"
-        assert payload["messages"] == messages
-        assert payload["stream"] is True
-        assert payload["temperature"] == 0.5
+        kwargs = self.client._build_kwargs(messages, None, None, None)
+        assert kwargs["model"] == "gpt-4"
+        assert kwargs["messages"] == messages
+        assert kwargs["temperature"] == 0.5
 
     def test_override_model(self):
-        client = ChatClient(Config(model="gpt-4"))
-        payload = client._build_payload([], model="gpt-3.5-turbo")
-        assert payload["model"] == "gpt-3.5-turbo"
+        kwargs = self.client._build_kwargs([], "gpt-3.5-turbo", None, None)
+        assert kwargs["model"] == "gpt-3.5-turbo"
 
-    def test_non_stream_payload(self):
-        client = ChatClient(Config())
-        payload = client._build_payload([], stream=False)
-        assert payload["stream"] is False
-        assert "stream_options" not in payload
+    def test_override_temperature(self):
+        kwargs = self.client._build_kwargs([], None, 0.9, None)
+        assert kwargs["temperature"] == 0.9
 
-    def test_max_tokens_in_payload(self):
+    def test_max_tokens_in_kwargs(self):
         client = ChatClient(Config(max_tokens=512))
-        payload = client._build_payload([])
-        assert payload["max_tokens"] == 512
+        kwargs = client._build_kwargs([], None, None, None)
+        assert kwargs["max_tokens"] == 512
 
-    def test_stream_options_included(self):
-        client = ChatClient(Config())
-        payload = client._build_payload([], stream=True)
-        assert payload["stream_options"] == {"include_usage": True}
+    def test_max_tokens_override(self):
+        kwargs = self.client._build_kwargs([], None, None, 256)
+        assert kwargs["max_tokens"] == 256
+
+    def test_no_max_tokens_when_none(self):
+        kwargs = self.client._build_kwargs([], None, None, None)
+        assert "max_tokens" not in kwargs
 
 
-class TestErrorExtraction:
-    """Test error message parsing from HTTP responses."""
+class TestErrorFormatting:
+    """Test API error message formatting."""
 
-    def test_json_error_body(self):
-        body = json.dumps({"error": {"message": "Invalid API key"}})
-        msg = _extract_error_message(body, 401)
-        assert "Invalid API key" in msg
+    def test_401_error(self):
+        err = mock.MagicMock()
+        err.status_code = 401
+        err.message = "Invalid API key"
+        msg = _format_api_error(err)
         assert "401" in msg
+        assert "Invalid API key" in msg
+        assert "Authentication failed" in msg
 
-    def test_plain_text_error(self):
-        msg = _extract_error_message("Bad Request", 400)
-        assert "Bad Request" in msg
-
-    def test_status_hint_included(self):
-        msg = _extract_error_message("", 429)
-        assert "Rate limited" in msg
+    def test_404_error(self):
+        err = mock.MagicMock()
+        err.status_code = 404
+        err.message = "Not found"
+        msg = _format_api_error(err)
+        assert "404" in msg
+        assert "Endpoint not found" in msg
 
     def test_unknown_status(self):
-        msg = _extract_error_message("", 418)
+        err = mock.MagicMock()
+        err.status_code = 418
+        err.message = "I'm a teapot"
+        msg = _format_api_error(err)
         assert "418" in msg
+        assert "I'm a teapot" in msg
+        # No hint for unknown status
+        assert "💡" not in msg
 
 
-class TestBackoff:
-    """Test exponential backoff calculation."""
+class TestClientInit:
+    """Test client initialization."""
 
-    def test_first_attempt(self):
-        delay = _calculate_backoff(0)
-        assert delay == 1.0
+    def test_client_creates_openai_instance(self):
+        client = ChatClient(Config(endpoint="http://test:8080/v1", api_key="sk-test"))
+        assert client._client is not None
+        assert client._client.api_key == "sk-test"
 
-    def test_second_attempt(self):
-        delay = _calculate_backoff(1)
-        assert delay == 2.0
-
-    def test_third_attempt(self):
-        delay = _calculate_backoff(2)
-        assert delay == 4.0
-
-    def test_retry_after_header(self):
-        mock_response = mock.MagicMock()
-        mock_response.headers = {"retry-after": "5"}
-        delay = _calculate_backoff(0, response=mock_response)
-        assert delay == 5.0
-
-
-class TestClientHeaders:
-    """Test that client sets correct headers."""
-
-    def test_headers_with_api_key(self):
-        client = ChatClient(Config(api_key="sk-test123"))
-        assert client._headers["Authorization"] == "Bearer sk-test123"
-        assert client._headers["Content-Type"] == "application/json"
-
-    def test_headers_without_api_key(self):
+    def test_client_no_api_key(self):
+        """When no API key, it should use a placeholder."""
         client = ChatClient(Config(api_key=""))
-        assert "Authorization" not in client._headers
+        assert client._client.api_key == "not-needed"
+
+    def test_client_stores_security_config(self):
+        client = ChatClient(Config(
+            allowed_hosts=["api.openai.com"],
+            enforce_allowlist=True,
+        ))
+        assert client._allowed_hosts == ["api.openai.com"]
+        assert client._enforce_allowlist is True
 
 
 class TestNetworkSecurity:
@@ -192,31 +135,61 @@ class TestNetworkSecurity:
         assert "evil.com" in result.error
 
     def test_no_enforcement_allows_any_host(self):
-        """When enforce_allowlist=False, no blocking occurs (request may still fail for other reasons)."""
+        """When enforce_allowlist=False, no blocking occurs."""
         config = Config(
             endpoint="https://anything.com/v1",
             allowed_hosts=[],
             enforce_allowlist=False,
         )
         client = ChatClient(config)
-        # Just verify the validation gate doesn't block — the actual HTTP
-        # will fail with ConnectError, which is fine for this test
         assert client._enforce_allowlist is False
+        # Validation should pass
+        assert client._validate_network() is None
 
-    def test_allowed_host_not_blocked(self):
-        """When host is in allowlist, no error chunk should be yielded at the gate."""
+    def test_allowed_host_passes_validation(self):
+        """When host is in allowlist, validation passes."""
         config = Config(
             endpoint="https://api.openai.com/v1",
             allowed_hosts=["api.openai.com"],
             enforce_allowlist=True,
         )
         client = ChatClient(config)
-        # The validation gate itself shouldn't block; the subsequent HTTP call
-        # will fail (no real server), but that's a different error
-        messages = [{"role": "user", "content": "hi"}]
-        chunks = list(client.stream_chat(messages))
-        # Should get an error, but NOT a BlockedHostError
-        for chunk in chunks:
-            if chunk.error:
-                assert "not in the allowed hosts" not in chunk.error
+        assert client._validate_network() is None
 
+    def test_validate_network_returns_error_chunk(self):
+        """_validate_network returns a ChatChunk with error when blocked."""
+        config = Config(
+            endpoint="https://evil.com/v1",
+            allowed_hosts=["api.openai.com"],
+            enforce_allowlist=True,
+        )
+        client = ChatClient(config)
+        result = client._validate_network()
+        assert result is not None
+        assert result.error is not None
+        assert "evil.com" in result.error
+
+
+class TestChatChunk:
+    """Test ChatChunk dataclass."""
+
+    def test_default_values(self):
+        chunk = ChatChunk()
+        assert chunk.delta_content == ""
+        assert chunk.finish_reason is None
+        assert chunk.error is None
+        assert chunk.usage is None
+
+    def test_with_content(self):
+        chunk = ChatChunk(delta_content="Hello", finish_reason="stop")
+        assert chunk.delta_content == "Hello"
+        assert chunk.finish_reason == "stop"
+
+    def test_with_error(self):
+        chunk = ChatChunk(error="Something went wrong")
+        assert chunk.error == "Something went wrong"
+
+    def test_with_usage(self):
+        usage = {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
+        chunk = ChatChunk(usage=usage)
+        assert chunk.usage["total_tokens"] == 30

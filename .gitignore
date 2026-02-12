@@ -3,3 +3,5 @@ __pycache__/
 .venv/
 chat_transcript.jsonl
 chat_session.json
+debug_requests.json
+*.egg-info/

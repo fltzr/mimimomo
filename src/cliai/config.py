@@ -41,6 +41,7 @@ class Config:
     redact_terms: dict = field(default_factory=dict)
     allowed_hosts: list = field(default_factory=list)
     enforce_allowlist: bool = False
+    tools_enabled: bool = True
 
     def display_endpoint(self) -> str:
         """Return a display-safe version of the endpoint."""

@@ -13,9 +13,6 @@ _test_config_dir.mkdir(parents=True, exist_ok=True)
 _test_data_dir.mkdir(parents=True, exist_ok=True)
 
 
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 with mock.patch("config.CONFIG_DIR", _test_config_dir), \
      mock.patch("config.DATA_DIR", _test_data_dir), \
      mock.patch("config.CONFIG_FILE", _test_config_dir / "config.yaml"), \

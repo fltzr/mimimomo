@@ -4,8 +4,6 @@ import sys
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 from commands import parse_command, CommandHandler, COMMAND_HELP
 
 

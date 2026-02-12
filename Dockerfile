@@ -11,7 +11,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application source
-COPY *.py ./
+COPY src/ ./src/
 
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash cliai
@@ -21,5 +21,5 @@ USER cliai
 ENV XDG_CONFIG_HOME=/home/cliai/.config
 ENV XDG_DATA_HOME=/home/cliai/.local/share
 
-ENTRYPOINT ["python", "chat_cli.py"]
+ENTRYPOINT ["python", "-m", "cliai"]
 CMD ["chat"]

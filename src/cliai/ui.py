@@ -14,7 +14,10 @@ from rich.text import Text
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.formatted_text import HTML
-from typing import Optional, Generator
+from typing import Callable, Optional, Generator
+
+import re
+import sys
 
 from config import Config, DATA_DIR
 
@@ -114,12 +117,17 @@ class ChatUI:
 
     # ── Output ──────────────────────────────────────────────────
 
-    def stream_response(self, chunks: Generator) -> tuple[str, Optional[dict]]:
+    def stream_response(
+        self,
+        chunks: Generator,
+        unredact: Optional[Callable[[str], str]] = None,
+    ) -> tuple[str, Optional[dict]]:
         """
         Render streaming chunks as live-updating markdown.
 
         Args:
             chunks: Generator yielding ChatChunk objects.
+            unredact: Optional callback to de-mask the final response.
 
         Returns:
             Tuple of (full_response_text, usage_dict_or_None).
@@ -145,6 +153,7 @@ class ChatUI:
                     if chunk.error:
                         status.stop()
                         self.show_error(chunk.error)
+                        self._flush_stdin()
                         return "", None
 
                     if chunk.usage:
@@ -161,6 +170,7 @@ class ChatUI:
                         break
                 else:
                     # Generator was empty
+                    self._flush_stdin()
                     return "", usage
 
             # Now stream remaining content with live markdown display
@@ -178,6 +188,7 @@ class ChatUI:
                         if chunk.error:
                             live.stop()
                             self.show_error(chunk.error)
+                            self._flush_stdin()
                             return full_response, usage
 
                         if chunk.usage:
@@ -196,6 +207,11 @@ class ChatUI:
                 except KeyboardInterrupt:
                     interrupted = True
 
+                # Final render with unredacted text
+                if unredact and full_response and not interrupted:
+                    display_text = unredact(full_response)
+                    live.update(Markdown(display_text))
+
         except KeyboardInterrupt:
             interrupted = True
 
@@ -208,17 +224,57 @@ class ChatUI:
         if usage:
             self._show_usage(usage)
 
+        self._flush_stdin()
         return full_response, usage
 
-    def show_non_stream_response(self, content: str, usage: Optional[dict] = None):
-        """Display a non-streamed response."""
+    def send_non_stream(
+        self,
+        send_fn: Callable,
+        unredact: Optional[Callable[[str], str]] = None,
+    ) -> tuple[str, Optional[dict], Optional[str]]:
+        """
+        Send a non-streaming request with a thinking spinner.
+
+        Args:
+            send_fn: Callable that returns a ChatChunk.
+            unredact: Optional callback to de-mask the response.
+
+        Returns:
+            Tuple of (response_text, usage, error).
+        """
         console.print()
-        console.print(Text("AI ›", style="bold bright_magenta"))
-        console.print(Markdown(content))
+        console.print(
+            Text("AI ›", style="bold bright_magenta"), end=" "
+        )
+
+        with console.status(
+            "[dim]Thinking…[/dim]", spinner="dots", spinner_style="bright_magenta"
+        ):
+            result = send_fn()
+
+        if result.error:
+            self.show_error(result.error)
+            self._flush_stdin()
+            return "", None, result.error
+
+        response_text = result.delta_content
+        display_text = unredact(response_text) if unredact else response_text
+
+        console.print(Markdown(display_text))
         console.print()
 
-        if usage:
-            self._show_usage(usage)
+        if result.usage:
+            usage = {
+                "prompt_tokens": result.usage.get("prompt_tokens", "?"),
+                "completion_tokens": result.usage.get("completion_tokens", "?"),
+                "total_tokens": result.usage.get("total_tokens", "?"),
+            }
+            self._show_usage(result.usage)
+        else:
+            usage = None
+
+        self._flush_stdin()
+        return response_text, usage, None
 
     def _show_usage(self, usage: dict):
         """Display token usage info."""
@@ -229,6 +285,16 @@ class ChatUI:
             f"  [dim]tokens: {prompt_tokens} prompt + "
             f"{completion_tokens} completion = {total_tokens} total[/dim]"
         )
+    # ── Utilities ────────────────────────────────────────────────
+
+    @staticmethod
+    def _flush_stdin():
+        """Drain any buffered keyboard input (prevents type-ahead during AI response)."""
+        try:
+            import termios
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        except (ImportError, termios.error, OSError):
+            pass  # Not a TTY or Windows
 
     # ── Status Messages ─────────────────────────────────────────
 
@@ -371,14 +437,27 @@ class ChatUI:
                 self.show_error("Unknown action. Use [s]end, [a]dd, [u]nredact #, or [c]ancel.")
 
     def _show_redaction_panel(self, redacted_text: str, redactions: list):
-        """Display the redaction review panel."""
+        """Display the redaction review panel with syntax-highlighted placeholders."""
         from rich.columns import Columns
 
-        # Build content
-        content_parts = []
-        content_parts.append(
-            Text(redacted_text, style="white")
-        )
+        # Build highlighted text: placeholders shown in bright green + bold
+        text_obj = Text()
+        if redactions:
+            # Build a regex that matches any placeholder token
+            placeholders = [re.escape(r.placeholder) for r in redactions]
+            pattern = re.compile("(" + "|".join(placeholders) + ")")
+            parts = pattern.split(redacted_text)
+
+            placeholder_set = {r.placeholder for r in redactions}
+            for part in parts:
+                if part in placeholder_set:
+                    text_obj.append(part, style="bold bright_green")
+                else:
+                    text_obj.append(part, style="white")
+        else:
+            text_obj = Text(redacted_text, style="white")
+
+        content_parts = [text_obj]
 
         if redactions:
             content_parts.append(Text(""))  # spacing
