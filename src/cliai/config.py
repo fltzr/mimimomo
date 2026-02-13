@@ -43,6 +43,11 @@ class Config:
     enforce_allowlist: bool = False
     tools_enabled: bool = True
 
+    # ── OpenAI Security Features ──
+    max_tokens_cap: int = 4096
+    max_input_chars: int = 100_000
+    max_agent_iterations: int = 10
+
     def display_endpoint(self) -> str:
         """Return a display-safe version of the endpoint."""
         return self.endpoint.rstrip("/")

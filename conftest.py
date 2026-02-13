@@ -2,4 +2,6 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "src" / "cliai"))
+root = Path(__file__).resolve().parent
+sys.path.insert(0, str(root / "src" / "cliai"))
+sys.path.insert(0, str(root / "src"))

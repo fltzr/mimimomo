@@ -6,7 +6,6 @@ Each prompt+response pair is saved as an individual JSON file.
 """
 
 import json
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -77,13 +76,6 @@ class ChatSession:
             messages.append({"role": "system", "content": "\n\n".join(prompt_parts)})
         messages.extend(self._messages)
         return messages
-
-    def get_last_user_message(self) -> Optional[str]:
-        """Get the last user message content, or None."""
-        for msg in reversed(self._messages):
-            if msg["role"] == "user":
-                return msg["content"]
-        return None
 
     def pop_last_exchange(self) -> Optional[str]:
         """
