@@ -12,6 +12,13 @@ dependencies = [
     "platformdirs",
 ]
 
+[project.optional-dependencies]
+ner = [
+    "presidio-analyzer",
+    "presidio-anonymizer",
+    "spacy",
+]
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"

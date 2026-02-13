@@ -721,3 +721,173 @@ class TestPlatformTokenDetection:
         )]
         assert len(plat_r) == 0
 
+
+# ── Entropy Detection Tests ─────────────────────────────────────
+
+
+class TestEntropyDetection:
+    """Test entropy-based secret detection."""
+
+    def test_high_entropy_hex_token(self):
+        """Random hex strings of sufficient length should be flagged."""
+        r = Redactor(ner_enabled=False)
+        token = "a3f7b2c9d1e8f4a6b0c5d2e7f3a9b1c8"  # 32-char random hex
+        text, redactions = r.redact(f"My token is {token}")
+        assert token not in text
+        entropy_r = [rd for rd in redactions if rd.category == "high_entropy"]
+        assert len(entropy_r) >= 1
+
+    def test_high_entropy_base64_token(self):
+        """Random base64 strings should be flagged."""
+        r = Redactor(ner_enabled=False)
+        token = "aB3xZ9pQ2mK7wR4nL8vY1cF6hJ5tG0dS"  # 32-char mixed
+        text, redactions = r.redact(f"Secret: {token}")
+        assert token not in text
+        entropy_r = [rd for rd in redactions if rd.category == "high_entropy"]
+        assert len(entropy_r) >= 1
+
+    def test_low_entropy_not_flagged(self):
+        """Repetitive strings should NOT be flagged."""
+        r = Redactor(ner_enabled=False)
+        token = "aaaaaaaaaaaaaaaa"  # 16 chars but zero entropy
+        text, redactions = r.redact(f"Value: {token}")
+        entropy_r = [rd for rd in redactions if rd.category == "high_entropy"]
+        assert len(entropy_r) == 0
+
+    def test_short_tokens_not_flagged(self):
+        """Tokens under 16 chars should NOT be flagged by entropy."""
+        r = Redactor(ner_enabled=False)
+        text, redactions = r.redact("Code: abc123")
+        entropy_r = [rd for rd in redactions if rd.category == "high_entropy"]
+        assert len(entropy_r) == 0
+
+    def test_normal_words_not_flagged(self):
+        """Normal English words should NOT be flagged."""
+        r = Redactor(ner_enabled=False)
+        text, redactions = r.redact(
+            "The implementation of this algorithm is straightforward"
+        )
+        entropy_r = [rd for rd in redactions if rd.category == "high_entropy"]
+        assert len(entropy_r) == 0
+
+    def test_urls_not_flagged_by_entropy(self):
+        """URLs should be caught by regex, not entropy."""
+        r = Redactor(ner_enabled=False)
+        text, redactions = r.redact(
+            "Visit https://example.com/api/v1/users/list"
+        )
+        entropy_r = [rd for rd in redactions if rd.category == "high_entropy"]
+        assert len(entropy_r) == 0
+
+    def test_entropy_consistent_placeholder(self):
+        """Same high-entropy token should get same placeholder across calls."""
+        r = Redactor(ner_enabled=False)
+        token = "xK9mP3qR7vL2nT5wA8bC4dF6gH1jE0s"
+        text1, _ = r.redact(f"First: {token}")
+        text2, _ = r.redact(f"Again: {token}")
+        assert "[SECRET_1]" in text1
+        assert "[SECRET_1]" in text2
+
+    def test_entropy_unredact(self):
+        """Entropy redactions should be reversible."""
+        r = Redactor(ner_enabled=False)
+        token = "zY8xW7vU6tS5rQ4pO3nM2lK1jI0hG9f"
+        text, _ = r.redact(f"Key: {token}")
+        assert token not in text
+        restored = r.unredact(text)
+        assert token in restored
+
+
+class TestEntropyNoFalsePositives:
+    """Ensure entropy detection doesn't catch common programming constructs."""
+
+    def test_python_code_not_flagged(self):
+        r = Redactor(ner_enabled=False)
+        text, redactions = r.redact(
+            "def calculate_total_price(items, discount_rate):"
+        )
+        entropy_r = [rd for rd in redactions if rd.category == "high_entropy"]
+        assert len(entropy_r) == 0
+
+    def test_json_structure_not_flagged(self):
+        r = Redactor(ner_enabled=False)
+        text, redactions = r.redact(
+            '{"username": "admin", "role": "administrator"}'
+        )
+        entropy_r = [rd for rd in redactions if rd.category == "high_entropy"]
+        assert len(entropy_r) == 0
+
+
+# ── NER Detection Tests ─────────────────────────────────────────
+
+
+class TestNERDetection:
+    """Test Presidio NER-based entity detection. Skipped if not installed."""
+
+    @pytest.fixture(autouse=True)
+    def _require_presidio(self):
+        pytest.importorskip("presidio_analyzer")
+
+    def test_person_name_detected(self):
+        r = Redactor(ner_enabled=True)
+        text, redactions = r.redact("Please contact John Smith for details")
+        ner_r = [rd for rd in redactions if rd.category == "ner_person"]
+        # Presidio should detect "John Smith"
+        assert len(ner_r) >= 1
+        assert "John Smith" not in text
+
+    def test_location_detected(self):
+        r = Redactor(ner_enabled=True)
+        text, redactions = r.redact(
+            "Our office moved to New York last month"
+        )
+        ner_r = [rd for rd in redactions if rd.category == "ner_location"]
+        assert len(ner_r) >= 1
+
+    def test_organization_detected(self):
+        r = Redactor(ner_enabled=True)
+        text, redactions = r.redact(
+            "We signed a contract with Microsoft Corporation"
+        )
+        ner_r = [rd for rd in redactions if rd.category == "ner_organization"]
+        assert len(ner_r) >= 1
+
+    def test_phone_number_detected(self):
+        r = Redactor(ner_enabled=True)
+        text, redactions = r.redact("Call me at 555-867-5309")
+        ner_r = [rd for rd in redactions if rd.category == "ner_phone_number"]
+        assert len(ner_r) >= 1
+
+    def test_ner_unredact(self):
+        r = Redactor(ner_enabled=True)
+        text, _ = r.redact("Send it to John Smith tomorrow")
+        assert "John Smith" not in text
+        restored = r.unredact(text)
+        assert "John Smith" in restored
+
+    def test_ner_skips_already_redacted(self):
+        """NER should not double-redact values already caught by regex."""
+        r = Redactor(ner_enabled=True)
+        text, redactions = r.redact(
+            "Email josh@company.com about this issue"
+        )
+        # Email should be caught by regex, not duplicated by NER
+        email_r = [rd for rd in redactions if "josh@company.com" == rd.original]
+        assert len(email_r) == 1
+
+
+class TestNERDisabled:
+    """Test that NER is cleanly skipped when disabled."""
+
+    def test_no_ner_when_disabled(self):
+        r = Redactor(ner_enabled=False)
+        text, redactions = r.redact("Please contact John Smith for details")
+        ner_r = [rd for rd in redactions if rd.category.startswith("ner_")]
+        assert len(ner_r) == 0
+
+    def test_regex_still_works_when_ner_disabled(self):
+        r = Redactor(ner_enabled=False)
+        text, redactions = r.redact("Server 192.168.1.50 on port 22")
+        assert "192.168.1.50" not in text
+        assert "[IP_1]" in text
+

@@ -42,6 +42,7 @@ class Config:
     allowed_hosts: list = field(default_factory=list)
     enforce_allowlist: bool = False
     tools_enabled: bool = True
+    ner_enabled: bool = True
 
     # ── OpenAI Security Features ──
     max_tokens_cap: int = 4096
@@ -166,6 +167,7 @@ def _apply_env_vars(config: dict) -> dict:
         "CLIAI_MAX_TOKENS": "max_tokens",
         "CLIAI_SYSTEM_PROMPT": "system_prompt",
         "CLIAI_STREAM": "stream",
+        "CLIAI_NER_ENABLED": "ner_enabled",
     }
 
     for env_var, config_key in env_map.items():

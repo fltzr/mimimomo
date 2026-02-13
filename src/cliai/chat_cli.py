@@ -104,7 +104,7 @@ def chat(
     client = ChatClient(config)
     session = ChatSession(system_prompt=config.system_prompt)
     ui = ChatUI(config)
-    redactor = Redactor(user_terms=config.redact_terms)
+    redactor = Redactor(user_terms=config.redact_terms, ner_enabled=config.ner_enabled)
     cmd_handler = CommandHandler(session, ui, config, client, redactor)
 
     # Show welcome

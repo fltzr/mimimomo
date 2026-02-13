@@ -2,11 +2,14 @@
 Redaction engine for CLIAI.
 
 Provides reversible masking of sensitive data (IPs, hostnames, UUIDs,
-emails, API keys, etc.) using regex patterns and user-defined terms.
+emails, API keys, etc.) using regex patterns, entropy analysis, NER,
+and user-defined terms.
 Maintains a consistent mapping so the same value always gets the same placeholder.
 """
 
+import math
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -28,10 +31,15 @@ class Redactor:
     and maintains a bidirectional mapping for de-masking responses.
     """
 
-    def __init__(self, user_terms: Optional[dict[str, str]] = None):
+    def __init__(
+        self,
+        user_terms: Optional[dict[str, str]] = None,
+        ner_enabled: bool = True,
+    ):
         """
         Args:
             user_terms: Dict of {sensitive_value: placeholder} from config.
+            ner_enabled: Whether to use Presidio NER (requires optional deps).
         """
         self._user_terms: dict[str, str] = user_terms or {}
         # Persistent mapping across the session: original → placeholder
@@ -40,6 +48,10 @@ class Redactor:
         self._reverse: dict[str, str] = {}
         # Counters per category for generating unique placeholders
         self._counters: dict[str, int] = {}
+        # NER support (lazy-loaded)
+        self._ner_enabled: bool = ner_enabled
+        self._ner_analyzer = None  # Loaded on first use
+        self._ner_load_attempted: bool = False
 
     # ── Public API ──────────────────────────────────────────────
 
@@ -81,6 +93,17 @@ class Redactor:
                     continue
                 placeholder = self._get_or_create_placeholder(value, category)
                 redactions.append(Redaction(value, placeholder, category))
+
+        # Phase 3: Entropy-based secret detection
+        already_redacted = {r.original for r in redactions}
+        entropy_redactions = self._detect_high_entropy_tokens(text, already_redacted)
+        redactions.extend(entropy_redactions)
+
+        # Phase 4: Presidio NER (lazy-loaded, optional)
+        if self._ner_enabled:
+            already_redacted = {r.original for r in redactions}
+            ner_redactions = self._detect_ner_entities(text, already_redacted)
+            redactions.extend(ner_redactions)
 
         #####
         ## Apply all redactions, longest first to avoid partial replacements
@@ -192,6 +215,124 @@ class Redactor:
         self._reverse[placeholder] = value
         return placeholder
 
+    # ── Entropy Detection ───────────────────────────────────────
+
+    @staticmethod
+    def _shannon_entropy(data: str, charset: str) -> float:
+        """Compute Shannon entropy of `data` over the given character set."""
+        filtered = [c for c in data if c in charset]
+        if len(filtered) < 2:
+            return 0.0
+        freq = Counter(filtered)
+        length = len(filtered)
+        return -sum(
+            (count / length) * math.log2(count / length)
+            for count in freq.values()
+        )
+
+    def _detect_high_entropy_tokens(
+        self, text: str, already_redacted: set[str]
+    ) -> list[Redaction]:
+        """
+        Find whitespace-delimited tokens with suspiciously high entropy.
+        These are likely API keys, tokens, or passwords that regex missed.
+        """
+        HEX_CHARS = "0123456789abcdefABCDEF"
+        BASE64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=-_"
+        HEX_THRESHOLD = 4.5
+        BASE64_THRESHOLD = 4.0
+        MIN_TOKEN_LEN = 16
+
+        redactions: list[Redaction] = []
+
+        # Split on whitespace and common delimiters but keep tokens intact
+        for token in re.findall(r'[^\s"\':;,{}\[\]()]+', text):
+            # Skip short tokens and already-mapped values
+            if len(token) < MIN_TOKEN_LEN:
+                continue
+            if token in self._mapping or token in already_redacted:
+                continue
+
+            # Skip tokens that look like normal words (all alpha, no mixed case)
+            if token.isalpha():
+                continue
+
+            # Skip URLs, file paths, and known structural patterns
+            if token.startswith(("http://", "https://", "/", "./", "../")):
+                continue
+
+            hex_entropy = self._shannon_entropy(token, HEX_CHARS)
+            b64_entropy = self._shannon_entropy(token, BASE64_CHARS)
+
+            if hex_entropy >= HEX_THRESHOLD or b64_entropy >= BASE64_THRESHOLD:
+                placeholder = self._get_or_create_placeholder(token, "high_entropy")
+                redactions.append(Redaction(token, placeholder, "high_entropy"))
+
+        return redactions
+
+    # ── NER Detection (Presidio) ────────────────────────────────
+
+    def _load_ner_analyzer(self):
+        """Lazy-load the Presidio analyzer engine. Called once per session."""
+        if self._ner_load_attempted:
+            return
+        self._ner_load_attempted = True
+
+        try:
+            from presidio_analyzer import AnalyzerEngine
+            self._ner_analyzer = AnalyzerEngine()
+        except ImportError:
+            # Presidio not installed — degrade gracefully
+            self._ner_analyzer = None
+        except Exception:
+            # Model loading failure or other issue
+            self._ner_analyzer = None
+
+    def _detect_ner_entities(
+        self, text: str, already_redacted: set[str]
+    ) -> list[Redaction]:
+        """
+        Use Presidio NER to detect person names, locations, organizations,
+        and other PII that regex cannot catch.
+        """
+        self._load_ner_analyzer()
+        if self._ner_analyzer is None:
+            return []
+
+        # Entity types to detect
+        entities = [
+            "PERSON", "LOCATION", "ORGANIZATION",
+            "PHONE_NUMBER", "CREDIT_CARD",
+            "IBAN_CODE", "US_SSN", "MEDICAL_LICENSE",
+        ]
+
+        try:
+            results = self._ner_analyzer.analyze(
+                text=text, language="en", entities=entities,
+            )
+        except Exception:
+            return []
+
+        redactions: list[Redaction] = []
+
+        # Filter by confidence and skip already-redacted spans
+        for result in sorted(results, key=lambda r: r.start):
+            if result.score < 0.6:
+                continue
+
+            value = text[result.start:result.end].strip()
+            if not value or len(value) < 2:
+                continue
+            if value in self._mapping or value in already_redacted:
+                continue
+
+            category = f"ner_{result.entity_type.lower()}"
+            placeholder = self._get_or_create_placeholder(value, category)
+            redactions.append(Redaction(value, placeholder, category))
+            already_redacted.add(value)
+
+        return redactions
+
 
 # ── Category Tags ───────────────────────────────────────────────
 
@@ -236,6 +377,17 @@ _CATEGORY_TAGS = {
     "mailchimp_key": "MAILCHIMP",
     "square_key": "SQUARE",
     "discord_token": "DISCORD",
+    # Entropy
+    "high_entropy": "SECRET",
+    # NER (Presidio)
+    "ner_person": "PERSON",
+    "ner_location": "LOCATION",
+    "ner_organization": "ORG",
+    "ner_phone_number": "PHONE",
+    "ner_credit_card": "CREDITCARD",
+    "ner_iban_code": "IBAN",
+    "ner_us_ssn": "SSN",
+    "ner_medical_license": "MEDLIC",
 }
 
 # ── Regex Patterns ──────────────────────────────────────────────
